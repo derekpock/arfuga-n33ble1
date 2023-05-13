@@ -1,5 +1,10 @@
 #include <ArduinoBLE.h>
 
+////////////////////////////////////////////////////////////////////////////////
+// Pin Management                                                             //
+// pin assignments and state tracking                                         //
+////////////////////////////////////////////////////////////////////////////////
+
 // Pin assignments
 #define PinButLeft 6
 #define PinLedLeft 4
@@ -11,6 +16,26 @@
 #define PinLedGreen LEDG
 #define PinLedBlue LEDB
 
+// Pin state tracking
+bool pinsUpdated = false;
+byte lastPinLedLeft;
+byte lastPinLedRight;
+byte lastPinLedBoard;
+byte lastPinLedRed;
+byte lastPinLedGreen;
+byte lastPinLedBlue;
+
+#define digitalWriteHistory(pin, value, pinLast) do { \
+  digitalWrite((pin), (value)); \
+  pinsUpdated |= ((pinLast) != (value)); \
+  (pinLast) = (value); \ 
+} while(false)
+
+#define analogWriteHistory(pin, value, pinLast) do { \
+  analogWrite((pin), (value)); \
+  pinsUpdated |= ((pinLast) != (value)); \
+  (pinLast) = (value); \
+} while(false)
 
 ////////////////////////////////////////////////////////////////////////////////
 // Button Function                                                            //
@@ -145,10 +170,25 @@ Button butRight = initButton(PinButRight);
 ////////////////////////////////////////////////////////////////////////////////
 
 #define MsPerSec 1000
+
+// All UI elements must "loop" within this range, no operations longer than this.
 #define UiTimerSpan (4 * MsPerSec)
+
+// *6 here is to allow all 4 timing settings to exist evenly in this repeating timer
+// 1000, 2000, 3000, and 4000 all fit evenly in 24000 (4000 * 6)
+#define UiTimerLoop (6 * UiTimerSpan)
+
+// Follows millis(). Jumps UiTimerLoop when difference between millis() and this
+// is at least UiTimerLoop.
 unsigned long uiTimer = 0;
+
+// Difference between uiTimer and millis(). Never larger than UiTimerLoop. 
+// Use with isTimerInSpan.
 unsigned int uiTimerDiff = 0;
 
+// Returns true if `(timer % (spanWidth*2)) < spanWidth)`.
+// Used for blinking leds or timing behaviors.
+// E.g. returns true for 500ms for every 1000ms that `timer` passes.
 bool isTimerInSpan(unsigned long* const timer, unsigned int const spanWidth) {
   while (*timer >= spanWidth * 2) {
     *timer -= (spanWidth * 2);
@@ -190,6 +230,8 @@ BLEByteCharacteristic charButHandRight    ("0fb8f0e2-3e24-49ab-a1e1-6f5494f92a0e
 BLEByteCharacteristic charLedLeft         ("72c46fe5-2c30-47fb-994b-0f044b2fec4f", BLERead | BLEWrite);
 BLEByteCharacteristic charLedRight        ("13d19bef-4512-4fef-84dc-7f251da6510b", BLERead | BLEWrite);
 
+char serialCommand = 0;
+
 void setup() {
   pinMode(PinButLeft,  INPUT_PULLUP);
   pinMode(PinButRight, INPUT_PULLUP);
@@ -201,14 +243,17 @@ void setup() {
   pinMode(PinLedBlue,  OUTPUT);
   pinMode(PinLedBoard, OUTPUT);
 
-  analogWrite(PinLedRed,   255);
-  analogWrite(PinLedGreen, 255);
-  analogWrite(PinLedBlue,  255);
+  analogWriteHistory(PinLedRed,   255, lastPinLedRed);
+  analogWriteHistory(PinLedGreen, 255, lastPinLedGreen);
+  analogWriteHistory(PinLedBlue,  255, lastPinLedBlue);
 
-  digitalWrite(PinLedBoard, HIGH);
+  Serial.begin(9600);
+  while(!Serial) {}
+
+  digitalWriteHistory(PinLedBoard, HIGH, lastPinLedBoard);
 
   if (!BLE.begin()) {
-    digitalWrite(PinLedBoard, LOW);
+    digitalWriteHistory(PinLedBoard, LOW, lastPinLedBoard);
     while (1);
   }
 
@@ -233,18 +278,18 @@ void setup() {
   charLedRight.writeValue((byte)0);
 
   if (!BLE.advertise()) {
-    digitalWrite(PinLedBoard, LOW);
+    digitalWriteHistory(PinLedBoard, LOW, lastPinLedBoard);
     while (1);
   }
 }
 
-void loopLedBlinkSequence(byte ledPin, byte blinkSeq) {
+void loopLedBlinkSequence(byte ledPin, byte blinkSeq, byte* lastLedPin) {
   byte const firstSeq = ledBlinkSeqFirst(blinkSeq);
   byte const secondSeq = ledBlinkSeqSecond(blinkSeq);
   byte const timing = ledBlinkTiming(blinkSeq);
 
   if (firstSeq == 0 || secondSeq == 0) {
-    digitalWrite(ledPin, secondSeq == 0 ? HIGH : LOW);
+    digitalWriteHistory(ledPin, secondSeq == 0 ? HIGH : LOW, *lastLedPin);
     return;
   }
 
@@ -254,7 +299,7 @@ void loopLedBlinkSequence(byte ledPin, byte blinkSeq) {
 
   bool const isFirstHalf = isTimerInSpan(&localTimerDiff, halfSequenceSpan);
   if (!isTimerInSpan(&localTimerDiff, sequencePartSpan)) {
-    digitalWrite(ledPin, LOW);
+    digitalWriteHistory(ledPin, LOW, *lastLedPin);
     return;
   }
 
@@ -268,7 +313,7 @@ void loopLedBlinkSequence(byte ledPin, byte blinkSeq) {
   unsigned int const sequenceToggleSpan = sequencePartSpan / togglesPerSequence;
 
   bool const isToggleOn = isTimerInSpan(&localTimerDiff, sequenceToggleSpan);
-  digitalWrite(ledPin, (isToggleOn ? HIGH : LOW));
+  digitalWriteHistory(ledPin, (isToggleOn ? HIGH : LOW), *lastLedPin);
 }
 
 void loop() {
@@ -276,21 +321,19 @@ void loop() {
 
 
   // Update uiTimer and uiTimerDiff.
-  // *6 here is to allow all 4 timing settings to exist evenly in this repeating timer
-  // 1000, 2000, 3000, and 4000 all fit evenly in 24000 (4000 * 6)
-  while ((millis() - uiTimer) >= (UiTimerSpan * 6)) {
-    uiTimer += (UiTimerSpan * 6);
+  while ((millis() - uiTimer) >= UiTimerLoop) {
+    uiTimer += UiTimerLoop;
   }
   uiTimerDiff = (millis() - uiTimer);
 
 
   // Handle the board led (both basic onboard and RGB)
   unsigned long const charBoardLedValue = charBoardLed.value();
-  loopLedBlinkSequence(PinLedBoard, ledBlinkSequenceFromUL(charBoardLedValue));
+  loopLedBlinkSequence(PinLedBoard, ledBlinkSequenceFromUL(charBoardLedValue), &lastPinLedBoard);
   if (charBoardLed.written()) {
-    analogWrite(PinLedRed,   ledRedFromUL(charBoardLedValue));
-    analogWrite(PinLedGreen, ledGreenFromUL(charBoardLedValue));
-    analogWrite(PinLedBlue,  ledBlueFromUL(charBoardLedValue));
+    analogWriteHistory(PinLedRed,   ledRedFromUL(charBoardLedValue), lastPinLedRed);
+    analogWriteHistory(PinLedGreen, ledGreenFromUL(charBoardLedValue), lastPinLedGreen);
+    analogWriteHistory(PinLedBlue,  ledBlueFromUL(charBoardLedValue), lastPinLedBlue);
   }
 
 
@@ -301,16 +344,64 @@ void loop() {
   // If buttons are pressed, override leds with a fixed blink sequence, or follow sequence if not pressed.
   if(butLeft.state == bPressed) {
     unsigned long adjustedTimerDiff = (millis() - butLeft.holdTimer);
-    digitalWrite(PinLedLeft, isTimerInSpan(&adjustedTimerDiff, ButtonPressedLedSpan) ? HIGH : LOW);
+    digitalWriteHistory(PinLedLeft, isTimerInSpan(&adjustedTimerDiff, ButtonPressedLedSpan) ? HIGH : LOW, lastPinLedLeft);
   } else {
-    loopLedBlinkSequence(PinLedLeft, charLedLeft.value());
+    loopLedBlinkSequence(PinLedLeft, charLedLeft.value(), &lastPinLedLeft);
   }
 
   if(butRight.state == bPressed) {
     unsigned long adjustedTimerDiff = (millis() - butRight.holdTimer);
-    digitalWrite(PinLedRight, isTimerInSpan(&adjustedTimerDiff, ButtonPressedLedSpan) ? HIGH : LOW);
+    digitalWriteHistory(PinLedRight, isTimerInSpan(&adjustedTimerDiff, ButtonPressedLedSpan) ? HIGH : LOW, lastPinLedRight);
   } else {
-    loopLedBlinkSequence(PinLedRight, charLedRight.value());
+    loopLedBlinkSequence(PinLedRight, charLedRight.value(), &lastPinLedRight);
   }
   
+  
+  // Check Serial I/O
+  if(pinsUpdated) {
+    pinsUpdated = false;
+    char buffer[18];
+    snprintf(buffer, 19, "%d,%d,%d,%3d,%3d,%3d", 
+             lastPinLedBoard, 
+             lastPinLedLeft,
+             lastPinLedRight,
+             lastPinLedRed,
+             lastPinLedGreen,
+             lastPinLedBlue);
+    Serial.println(buffer);
+  }
+
+  while(Serial.available()) {
+    if(!serialCommand) {
+      serialCommand = Serial.read();
+      switch(serialCommand) {
+        case 'l':
+        case 'r':
+          break;
+
+        case 'p':
+          pinsUpdated = true;
+          serialCommand = 0;
+          break;
+
+        default:
+          serialCommand = 0;
+          break;
+      }
+      
+      continue;
+    }
+
+    switch(serialCommand) {
+      case 'l':
+      case 'r': {
+        // '0' is 48, minus one more for '1' to match ButtonPressOnce (0x00______)
+        byte const pressType = (Serial.read() - 49) << 6;
+        Serial.println(pressType);
+        setAndIncrementButtonCharacter(pressType, ((serialCommand == 'l') ? &charButLeft : &charButRight));
+        serialCommand = 0;
+        break;
+      }
+    }
+  }
 }
