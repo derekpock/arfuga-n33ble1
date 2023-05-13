@@ -269,13 +269,13 @@ void setup() {
   BLE.setAdvertisedServiceUuid("5202f40a-2c8c-4636-8f63-23c468df0c55");
   BLE.addService(cbService);
 
-  charBoardLed.writeValue((unsigned long)0);
+  charBoardLed.writeValue((unsigned long)0);  // Start on, and rgb(255, 255, 255)
   charButLeft.writeValue((byte)0);
   charButRight.writeValue((byte)0);
   charButHandLeft.writeValue((byte)0);
   charButHandRight.writeValue((byte)0);
-  charLedLeft.writeValue((byte)0);
-  charLedRight.writeValue((byte)0);
+  charLedLeft.writeValue((byte)0b00111000);  // Start off
+  charLedRight.writeValue((byte)0);          // Start on
 
   if (!BLE.advertise()) {
     digitalWriteHistory(PinLedBoard, LOW, lastPinLedBoard);
@@ -284,6 +284,12 @@ void setup() {
 }
 
 void loopLedBlinkSequence(byte ledPin, byte blinkSeq, byte* lastLedPin) {
+  // Led operation is broken into four parts, two blinking sequences, and two off periods.
+  // Blinking sequences each can be different. Timing of all four parts can be adjusted.
+  // Example: 1/4 of the loop consists of 15 chars (representing time):
+  // <XXX---XXX---XXX---------------XXXXX-----XXXXX--------------->
+  //  ^firstSeq      ^firstOff      ^secondSeq     ^secondOff     ^ loop back to firstSeq
+
   byte const firstSeq = ledBlinkSeqFirst(blinkSeq);
   byte const secondSeq = ledBlinkSeqSecond(blinkSeq);
   byte const timing = ledBlinkTiming(blinkSeq);
