@@ -248,7 +248,6 @@ void setup() {
   analogWriteHistory(PinLedBlue,  255, lastPinLedBlue);
 
   Serial.begin(9600);
-  while(!Serial) {}
 
   digitalWriteHistory(PinLedBoard, HIGH, lastPinLedBoard);
 
@@ -364,7 +363,7 @@ void loop() {
   
   
   // Check Serial I/O
-  if(pinsUpdated) {
+  if(Serial && pinsUpdated) {
     pinsUpdated = false;
     char buffer[18];
     snprintf(buffer, 19, "%d,%d,%d,%3d,%3d,%3d", 
@@ -377,7 +376,7 @@ void loop() {
     Serial.println(buffer);
   }
 
-  while(Serial.available()) {
+  while(Serial && Serial.available()) {
     if(!serialCommand) {
       serialCommand = Serial.read();
       switch(serialCommand) {
